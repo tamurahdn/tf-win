@@ -1,0 +1,65 @@
+# dev環境用 terraform.tfvars サンプル
+# 実際の値に置き換えて terraform.tfvars として保存し、Git管理対象外とすること。
+
+project_name = "winapp"
+owner        = "infra-team"
+aws_region   = "ap-northeast-1"
+aws_profile  = "myprofile-prod"
+
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["ap-northeast-1a", "ap-northeast-1c"]
+public_subnet_cidrs  = ["10.0.0.0/24", "10.0.1.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+enable_nat_gateway   = true
+single_nat_gateway   = false
+enable_vpc_endpoints = true
+
+ec2_instance_type            = "m5.large"
+ec2_instance_count            = 1
+ec2_root_volume_size          = 100
+ec2_root_volume_type          = "gp3"
+ec2_key_pair_name             = null
+ec2_deploy_in_private_subnet  = true
+enable_rdp_access             = false
+rdp_allowed_cidrs             = []
+enable_bastion                = false
+bastion_allowed_cidrs         = []
+setup_script_execution_mode   = "userdata"
+setup_script_s3_key           = "bootstrap.ps1"
+
+# FSxはAD参加が必須。AD未整備の検証環境ではfalseにしてスキップ可能。
+enable_fsx              = true
+fsx_storage_capacity     = 300
+fsx_throughput_capacity  = 128
+fsx_storage_type         = "SSD"
+fsx_deployment_type      = "SINGLE_AZ_2"
+fsx_shared_folders       = ["Input", "Output", "Workspace", "Temp", "Logs"]
+
+# AD参加が必要な場合は以下を設定する(機微情報のためtfvarsにはコミットしないこと)
+# fsx_self_managed_active_directory = {
+#   dns_ips     = ["10.0.10.10"]
+#   domain_name = "corp.example.local"
+#   username    = "svc-fsx-join"
+#   password    = "REPLACE_ME"
+# }
+
+s3_bucket_names = {
+  input     = "input"
+  output    = "output"
+  scripts   = "scripts"
+  logs      = "logs"
+  artifacts = "artifacts"
+}
+s3_force_destroy                = false
+s3_lifecycle_expiration_days    = 0
+s3_lifecycle_transition_ia_days = 30
+
+kms_deletion_window_in_days = 30
+create_app_secret           = true
+
+enable_sns_notifications = true
+sns_notification_email   = ""
+alarm_cpu_threshold       = 80
+alarm_memory_threshold    = 80
+alarm_disk_threshold      = 80
+log_retention_in_days     = 365
