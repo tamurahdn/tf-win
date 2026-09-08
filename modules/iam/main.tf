@@ -43,9 +43,9 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent_server_policy" {
 
 data "aws_iam_policy_document" "s3_access" {
   statement {
-    sid     = "S3ListBuckets"
-    effect  = "Allow"
-    actions = ["s3:ListBucket"]
+    sid       = "S3ListBuckets"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
     resources = var.s3_bucket_arns
   }
 

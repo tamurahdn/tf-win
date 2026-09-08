@@ -69,4 +69,19 @@ module "tf_win" {
   alarm_memory_threshold   = var.alarm_memory_threshold
   alarm_disk_threshold     = var.alarm_disk_threshold
   log_retention_in_days    = var.log_retention_in_days
+
+  enable_event_driven_job_execution    = var.enable_event_driven_job_execution
+  use_step_functions                   = var.use_step_functions
+  job_input_key_prefix                 = var.job_input_key_prefix
+  target_tag_key                       = var.target_tag_key
+  target_tag_value                     = var.target_tag_value
+  use_tag_based_targeting              = var.use_tag_based_targeting
+  default_app_config_name              = var.default_app_config_name
+  launcher_script_s3_key               = var.launcher_script_s3_key
+  lambda_timeout_seconds               = var.lambda_timeout_seconds
+  lambda_memory_size                   = var.lambda_memory_size
+  lambda_reserved_concurrency          = var.lambda_reserved_concurrency
+  ssm_command_timeout_seconds          = var.ssm_command_timeout_seconds
+  step_functions_poll_interval_seconds = var.step_functions_poll_interval_seconds
+  step_functions_max_poll_attempts     = var.step_functions_max_poll_attempts
 }

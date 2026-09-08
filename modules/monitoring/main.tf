@@ -147,7 +147,7 @@ resource "aws_cloudwatch_event_rule" "instance_stopped" {
     source      = ["aws.ec2"]
     detail-type = ["EC2 Instance State-change Notification"]
     detail = {
-      state      = ["stopped"]
+      state       = ["stopped"]
       instance-id = var.instance_ids
     }
   })
@@ -219,7 +219,7 @@ resource "aws_cloudwatch_metric_alarm" "fsx_storage_capacity" {
   metric_name         = "FreeStorageCapacity"
   statistic           = "Average"
   period              = 300
-  evaluation_periods   = 3
+  evaluation_periods  = 3
   threshold           = 10 * 1024 * 1024 * 1024 # 10GiB(必要に応じて環境ごとに調整)
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "missing"

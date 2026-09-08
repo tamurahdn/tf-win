@@ -29,6 +29,24 @@ variable "output_s3_bucket_name" {
   type        = string
 }
 
+variable "launcher_script_s3_key" {
+  description = "launcher.ps1のS3キー(scriptsバケット配下)"
+  type        = string
+  default     = "launcher/launcher.ps1"
+}
+
+variable "launcher_timeout_seconds" {
+  description = "Launcher実行(SSM Run Command)のタイムアウト秒数"
+  type        = number
+  default     = 7200
+}
+
+variable "default_app_config_name" {
+  description = "Launcherが参照するデフォルトのアプリケーション設定名"
+  type        = string
+  default     = "sample-uppercase"
+}
+
 variable "tags" {
   description = "共通タグ"
   type        = map(string)

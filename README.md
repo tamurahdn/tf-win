@@ -12,12 +12,13 @@ Python・PowerShell・.NET・Visual C++ Runtime・Anacondaなどの実行環境�
 ## 目次
 
 1. [システム概要](#システム概要)
-2. [前提ソフトウェア](#前提ソフトウェア)
-3. [AWS認証情報の設定方法](#aws認証情報の設定方法)
-4. [Terraform実行方法](#terraform実行方法)
-5. [トラブルシューティング](#トラブルシューティング)
-6. [設計判断理由 / 採用しなかった構成案](#設計判断理由--採用しなかった構成案)
-7. [将来拡張](#将来拡張)
+2. [イベント駆動ジョブ実行基盤](#イベント駆動ジョブ実行基盤)
+3. [前提ソフトウェア](#前提ソフトウェア)
+4. [AWS認証情報の設定方法](#aws認証情報の設定方法)
+5. [Terraform実行方法](#terraform実行方法)
+6. [トラブルシューティング](#トラブルシューティング)
+7. [設計判断理由 / 採用しなかった構成案](#設計判断理由--採用しなかった構成案)
+8. [将来拡張](#将来拡張)
 
 ---
 
@@ -95,28 +96,39 @@ flowchart TB
 | S3 | input/output/scripts/logs/artifacts用バケット |
 | IAM Role / Instance Profile | EC2への最小権限付与 |
 | SNS (オプション) | アラーム通知 |
-| EventBridge | EC2停止検知・SSM Compliance異常検知 |
+| EventBridge | EC2停止検知・SSM Compliance異常検知 / **S3 ObjectCreatedイベントによるジョブ起動トリガー** |
+| Lambda | **Job Dispatcher: S3イベント受信・ジョブID生成・SSM Run Command発行** |
+| Step Functions (オプション) | **ジョブ状態(SSMコマンド完了)のポーリング管理・タイムアウト制御** |
 
 ### ディレクトリ構成
 
 ```
 tf-win/
 ├── modules/
-│   ├── network/      # VPC, Subnet, IGW, NAT, Route Table, VPC Endpoint
-│   ├── ec2/           # Windows EC2, UserData
-│   ├── fsx/           # FSx for Windows File Server
-│   ├── s3/            # S3バケット群
-│   ├── iam/           # IAM Role / Instance Profile / 最小権限ポリシー
-│   ├── monitoring/    # CloudWatch Alarm, SNS, EventBridge
-│   ├── security/      # KMS, Security Group, Secrets Manager
-│   ├── logging/       # CloudWatch Logsロググループ
-│   └── ssm/           # SSMドキュメント, State Manager Association
+│   ├── network/        # VPC, Subnet, IGW, NAT, Route Table, VPC Endpoint
+│   ├── ec2/             # Windows EC2, UserData
+│   ├── fsx/             # FSx for Windows File Server
+│   ├── s3/              # S3バケット群 (EventBridge通知設定含む)
+│   ├── iam/             # IAM Role / Instance Profile / 最小権限ポリシー
+│   ├── monitoring/      # CloudWatch Alarm(CPU/メモリ/ディスク/FSx/EC2), SNS, EventBridge
+│   ├── security/        # KMS, Security Group, Secrets Manager
+│   ├── logging/         # CloudWatch Logsロググループ
+│   ├── ssm/             # SSMドキュメント(セットアップ/Launcher起動), State Manager Association
+│   ├── lambda/          # Job Dispatcher Lambda (S3イベント→SSM Run Command)
+│   ├── eventbridge/     # S3 ObjectCreatedイベントルール(Lambda/Step Functionsターゲット切替)
+│   ├── stepfunctions/   # ジョブ状態ポーリング用ステートマシン(オプション)
+│   └── cloudwatch/      # Lambda/SSM/ジョブ実行に関するCloudWatch Alarm
+├── launcher/
+│   ├── launcher.ps1     # 共通Launcher(入力取得→アプリ起動→出力アップロード)
+│   └── config/          # アプリケーション設定(JSON)。差し替えのみで対象アプリを変更可能
+├── apps/
+│   └── sample-uppercase/ # 動作確認用サンプルアプリ(入力テキストを大文字変換)
 ├── environments/
-│   ├── dev/           # dev環境 (backend, tfvars)
-│   ├── stg/           # stg環境
-│   └── prod/          # prod環境
-├── scripts/           # 初期セットアップスクリプト配置場所(本Terraformの管理外)
-├── main.tf            # ルートモジュール(各サブモジュールの結線)
+│   ├── dev/             # dev環境 (backend, tfvars)
+│   ├── stg/             # stg環境
+│   └── prod/            # prod環境
+├── scripts/             # 初期セットアップスクリプト配置場所(本Terraformの管理外)
+├── main.tf              # ルートモジュール(各サブモジュールの結線)
 ├── variables.tf
 ├── outputs.tf
 ├── locals.tf
@@ -139,6 +151,206 @@ tf-win/
   任意のWindows GUIアプリケーションに対応できる汎用基盤とする。
 - **セットアップ処理の責務分離**: Terraformはスクリプトを実行可能な状態にするまでとし、
   スクリプトの中身(ランタイム導入等)は運用チームが管理する。
+
+---
+
+## イベント駆動ジョブ実行基盤
+
+`enable_event_driven_job_execution = true` を設定することで、S3 Inputバケットへの
+ファイルアップロードをトリガーに、Windowsアプリケーションの実行から結果取得までを
+AWSサービスによって自動化するイベント駆動ジョブ実行基盤を追加構築できます。
+
+Windows側にフォルダ監視サービス(FileSystemWatcher等)を常駐させる方式ではなく、
+サーバーレスのAWSイベント駆動を採用することで、Windows EC2は「実際のアプリケーション実行」
+のみを担当し、ジョブ投入・管理はAWSマネージドサービス側に寄せています
+(AWS Well-Architected Frameworkの運用性・信頼性の柱に沿った設計判断です)。
+
+### システム概要
+
+- **疎結合設計**: Lambda(Job Dispatcher)はS3イベントの受信・ジョブID生成・
+  SSM Run Commandの発行のみを担当し、Windowsアプリケーションの実行ファイル名や
+  コマンドライン引数など「アプリケーションの詳細」を一切知りません。
+- **Launcherによるインターフェース共通化**: Windows側にはLauncher(`launcher.ps1`)のみを
+  配置し、入力取得・作業ディレクトリ作成・アプリ起動・終了コード取得・ログ出力・
+  出力アップロード・終了通知の責務のみを持たせます。対象アプリケーションは
+  `launcher/config/<AppConfigName>.json` の実行ファイルパス・引数定義を差し替えるだけで
+  切り替え可能です(HFSS/CAD/CAE/独自EXEいずれも同一の仕組みで対応)。
+- **FSxをジョブ作業領域として利用**: ジョブごとに `Workspace/{JobId}` ディレクトリを
+  作成し、入力/出力/一時ファイルを分離します。
+- **Step Functionsはオプション**: `use_step_functions = true` の場合、EventBridgeの後続を
+  Step Functionsに切り替え、SSMコマンドの完了をポーリングしてジョブの成功/失敗/
+  タイムアウトを判定できます(後述のトレードオフ参照)。
+
+### AWSアーキテクチャ図
+
+```mermaid
+flowchart LR
+    User[ユーザー] -->|ファイルアップロード| S3Input["S3 Input Bucket"]
+    S3Input -->|ObjectCreated Event| EventBridge["Amazon EventBridge"]
+
+    subgraph Dispatch["ジョブディスパッチ(サーバーレス)"]
+        EventBridge -->|直接起動 or| Lambda["AWS Lambda<br/>Job Dispatcher"]
+        EventBridge -.->|Step Functions利用時| SFN["AWS Step Functions<br/>(ジョブ状態ポーリング)"]
+        SFN -.->|Invoke| Lambda
+    end
+
+    Lambda -->|ssm:SendCommand| SSM["Systems Manager<br/>Run Command"]
+    SFN -.->|ssm:GetCommandInvocation| SSM
+
+    SSM -->|Launcher起動| EC2["Windows EC2<br/>PowerShell Launcher"]
+    EC2 -->|入力取得/出力書込| FSx["Amazon FSx<br/>Workspace/{JobId}"]
+    EC2 -->|任意Windowsアプリ起動| App["対象Windowsアプリケーション<br/>(HFSS/CAD/CAE/独自EXE等)"]
+    EC2 -->|出力アップロード| S3Output["S3 Output Bucket"]
+    EC2 -->|ログ出力| CWLogs["CloudWatch Logs"]
+
+    Lambda -->|ログ出力| CWLogs
+    SSM -->|実行ログ| CWLogs
+    CWLogs --> CWAlarm["CloudWatch Alarm<br/>(Lambda Error/Timeout,<br/>SSM失敗, EC2オフライン)"]
+    CWAlarm -.->|オプション| SNS["SNS通知"]
+```
+
+### シーケンス図
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant S3In as S3 Input Bucket
+    participant EB as EventBridge
+    participant L as Lambda(Job Dispatcher)
+    participant SFN as Step Functions(任意)
+    participant SSM as Systems Manager
+    participant EC2 as Windows EC2(Launcher)
+    participant FSx as Amazon FSx
+    participant S3Out as S3 Output Bucket
+
+    User->>S3In: ファイルアップロード(sample.txt)
+    S3In->>EB: ObjectCreated Event
+    alt Step Functions利用時
+        EB->>SFN: StartExecution
+        SFN->>L: Invoke(Lambda呼び出し)
+    else Lambda直接起動
+        EB->>L: Invoke
+    end
+    L->>L: ジョブID生成
+    L->>SSM: SendCommand(launcher.ps1起動)
+    SSM-->>L: CommandId, InstanceId
+    opt Step Functions利用時
+        loop ポーリング(最大max_poll_attempts回)
+            SFN->>SSM: GetCommandInvocation
+            SSM-->>SFN: Status(Pending/InProgress/Success/Failed)
+        end
+    end
+    SSM->>EC2: launcher.ps1実行
+    EC2->>S3In: 入力ファイル取得(Read-S3Object)
+    EC2->>FSx: Workspace/{JobId} 作成・入出力配置
+    EC2->>EC2: 対象Windowsアプリケーション起動
+    EC2->>EC2: 終了コード取得・ログ出力
+    EC2->>S3Out: 出力ファイルアップロード(Write-S3Object)
+    EC2-->>SSM: 終了コード返却
+    EC2->>EC2: CloudWatch Logsへ完了ログ出力(job_completed)
+```
+
+### ジョブ実行フロー(概要)
+
+```
+入力ファイルアップロード (S3 Input)
+        ↓
+ObjectCreated Event (EventBridge)
+        ↓
+Job Dispatcher Lambda (ジョブID生成・SSM Run Command発行)
+        ↓
+Systems Manager Run Command
+        ↓
+Windows EC2: PowerShell Launcher実行
+   ├─ 入力ファイル取得 (S3 → FSx Workspace/{JobId})
+   ├─ 作業ディレクトリ作成
+   ├─ 対象Windowsアプリケーション起動 (config駆動)
+   ├─ 終了コード取得・ログ出力
+   └─ 出力ファイル保存 (FSx → S3 Output)
+        ↓
+S3 Output Bucket (処理結果)
+```
+
+### Lambdaデプロイ方法
+
+Lambdaのソースコードは [modules/lambda/src/index.py](./modules/lambda/src/index.py) にあり、
+`terraform apply` 実行時に `archive_file` データソースが自動的にZIP化してデプロイします。
+コード変更後は追加の手順なく `terraform plan` / `terraform apply` を実行するだけで
+`source_code_hash` の差分により再デプロイされます。
+
+```bash
+# コード変更後、差分確認のうえ適用
+cd environments/dev
+terraform plan -target=module.lambda
+terraform apply -target=module.lambda
+```
+
+手動でZIPの中身を確認したい場合は次のように実行できます。
+
+```bash
+cd modules/lambda
+zip -r /tmp/job-dispatcher-check.zip src
+unzip -l /tmp/job-dispatcher-check.zip
+```
+
+### Launcher差し替え方法
+
+Launcher自体(`launcher/launcher.ps1`)はアプリケーションの詳細を持たない共通実装のため、
+通常はアプリケーション設定(JSON)の追加・変更のみで対応できます。
+
+1. `launcher/config/<新しい設定名>.json` を作成し、対象アプリケーションの
+   実行ファイルパス・引数(`{input}` `{output}` `{workdir}` `{config}` プレースホルダ利用可)・
+   出力ファイル名を定義する。
+2. アプリケーション本体・依存ランタイムをWindows EC2側にインストールする
+   (本Terraformの責務外。初期セットアップスクリプトまたは別途手順で対応)。
+3. `terraform.tfvars` の `default_app_config_name` を新しい設定名に変更するか、
+   ジョブごとに異なるアプリを使い分けたい場合はLambda呼び出し元(EventBridgeルールの
+   キープレフィックス等)で `appConfigName` パラメータを出し分ける。
+4. `scripts` バケットへ `launcher.ps1` および設定ファイルをアップロードする
+   (SSMドキュメントが実行時にダウンロードして利用する)。
+
+Launcher自体を改修する必要があるケース(例: 複数出力ファイル対応、進捗レポート追加等)は
+[launcher/launcher.ps1](./launcher/launcher.ps1) を直接編集し、責務(入力取得・作業ディレクトリ
+作成・起動・終了コード取得・ログ出力・出力保存・終了通知)を超えないよう留意してください。
+
+### 新しいWindowsアプリケーション追加方法
+
+1. アプリケーション本体をWindows EC2上へインストール(初期セットアップスクリプトまたは
+   AMI/ゴールデンイメージへ組み込み)。
+2. `launcher/config/<app-name>.json` を作成:
+   ```json
+   {
+     "executable": "C:\\Apps\\MyApp\\App.exe",
+     "arguments": ["--input", "{input}", "--output", "{output}", "--workdir", "{workdir}", "--config", "{config}"],
+     "outputFileName": "result.dat"
+   }
+   ```
+3. `scripts` バケットへ設定ファイルをアップロード。
+4. `terraform.tfvars` の `default_app_config_name` を切り替えるか、SSM Run Command呼び出し時の
+   `appConfigName` パラメータで指定。
+5. Terraform/AWS側の変更は一切不要(Lambda/EventBridge/SSMドキュメントはアプリケーションに
+   依存しない設計のため)。
+
+### Step Functions採用のメリット・デメリット
+
+| 観点 | Lambda直接起動 (`use_step_functions=false`) | Step Functions経由 (`use_step_functions=true`) |
+|---|---|---|
+| メリット | 構成がシンプル、レイテンシが最小、コストが低い | ジョブの状態遷移(実行中/成功/失敗/タイムアウト)を可視化・管理しやすい。ポーリング・リトライ・タイムアウト処理を宣言的に記述できる。実行履歴がStep Functionsコンソールで追跡可能 |
+| デメリット | ジョブの完了検知・タイムアウト管理は別途実装が必要(CloudWatch Logsベースの監視に依存) | 構成要素が増え保守対象が増加。ポーリング方式のためSSMコマンド完了までLambda Invoke課金が発生し続ける(比較的軽微だが考慮要) |
+| 推奨ケース | シンプルな用途、ジョブ完了通知が不要、コスト最小化を優先する場合 | ジョブの実行履歴管理・複雑なエラーハンドリング・将来的なワークフロー拡張(複数ステップの処理)を見込む場合 |
+
+将来的にジョブ前後に複数ステップ(前処理→アプリ実行→後処理→通知等)を追加する場合は
+Step Functionsへの移行が容易な設計としています。
+
+### トラブルシューティング(イベント駆動ジョブ実行基盤)
+
+| 症状 | 想定原因 | 対処 |
+|---|---|---|
+| ファイルをアップロードしてもジョブが起動しない | S3バケットのEventBridge通知が無効、またはEventBridgeルールのキープレフィックス不一致 | `enable_event_driven_job_execution=true` か確認。`job_input_key_prefix` とアップロードキーが一致するか確認 |
+| Lambdaのログに `ssm_send_command_failed` が出力される | 対象EC2のSSM Agentがオフライン、またはIAM権限不足 | EC2のSSM接続状況を `aws ssm describe-instance-information` で確認。Lambda実行ロールのSSM権限を確認 |
+| SSM実行は成功するが出力ファイルが生成されない | Launcher内でアプリケーションが異常終了、または `outputFileName` の設定ミス | CloudWatch Logs `job-execution-log` ロググループでLauncherの構造化ログ(`app_exited`, `output_file_missing`等)を確認 |
+| Step Functionsの実行がタイムアウトする | `max_poll_attempts` × `poll_interval_seconds` がアプリケーションの想定実行時間より短い | 変数を調整するか、長時間ジョブの場合は非同期通知方式への変更を検討 |
+| Lambdaがタイムアウトする | `lambda_timeout_seconds` が短すぎる、SSM API呼び出しの遅延 | Lambdaは本来SSM SendCommandの発行のみのため長時間化は稀。CloudWatch Logsでボトルネックを確認 |
 
 ---
 
@@ -426,6 +638,7 @@ terraform apply -var-file=terraform.tfvars \
 | `terraform plan` で毎回EC2が再作成される | AMI更新等が原因の場合は `modules/ec2` の `lifecycle.ignore_changes` でAMI変更を無視する設定を入れている。他の属性(サブネット等)の差分がないか確認する。 |
 | `Error: "egress.0.description" doesn't comply with restrictions` | AWSのSecurity Group ルールの説明文は英数字と一部記号のみ許可される。日本語を含めないこと(本プロジェクトでは既に英語化済み)。 |
 | S3バケット名が重複してcreateに失敗する | バケット名はグローバルに一意である必要がある。本プロジェクトはアカウントIDをバケット名に付与しているが、それでも衝突する場合は `s3_bucket_names` のサフィックスを変更する。 |
+| ローカル環境に `pwsh`(PowerShell)や `tflint`/`tfsec` が無く静的解析が実行できない | サンドボックス/CI環境によっては未インストールの場合がある。Lambdaは `python3 -m py_compile` / `pyflakes` で代替可能。PowerShellはGitHub Actions等のWindows/Ubuntuランナー上で `Invoke-ScriptAnalyzer`(PSScriptAnalyzer)を利用したCIパイプラインの追加を推奨する(将来拡張のCI/CD項目を参照)。 |
 
 ---
 
@@ -488,6 +701,21 @@ NAT Gateway経由(インターネット向け経路)ではなくVPC内で完結�
   些細なスクリプト変更のたびにTerraformの差分・レビューが必要になり保守性が
   低下するため、スクリプト自体は別リポジトリ/別ファイルとして管理し、
   Terraformは「配置・実行できる状態にする」ことに専念する設計とした。
+- **Windows側でのフォルダ監視常駐サービス方式**: FileSystemWatcher等をWindows側で
+  常駐させ、S3同期エージェント経由でポーリングする方式も検討したが、
+  (1)Windows側に監視プロセスの維持・障害対応という運用負荷が発生する、
+  (2)スケールアウト時に複数インスタンスでの重複実行制御が複雑になる、
+  という理由から、AWS側のイベント駆動(EventBridge)を採用し、Windows側は
+  「呼び出されたら実行するだけ」のステートレスな構成とした。
+- **Lambdaによるアプリケーション実行そのものの代替(コンテナ化)**: Windows GUI/
+  デスクトップアプリケーション(HFSS/CAD等)の多くはLambda上のコンテナや
+  Fargateでは動作しない(GUI依存・ライセンスドングル・Windows専用ドライバ等)ため、
+  実行部分はWindows EC2に残し、Lambdaは「呼び出すだけ」の薄い層とした。
+- **SSM GetCommandInvocationのコールバック統合**: Step Functionsのタスクトークン
+  (`waitForTaskToken`)によるコールバック待受を検討したが、SSM Run Command自体が
+  Step Functionsへの完了通知(コールバック)を標準でサポートしていないため、
+  ポーリング方式(Wait→GetCommandInvocation→Choice)を採用した。将来SSMが
+  EventBridge経由の完了通知に対応した場合は、コールバック方式への移行を検討する。
 
 ---
 
@@ -500,9 +728,13 @@ NAT Gateway経由(インターネット向け経路)ではなくVPC内で完結�
   変更するだけで対応可能(ドライバ導入はセットアップスクリプト側)。
 - **Auto Scaling / 複数Windowsサーバー**: `ec2_instance_count` は既に複数台数対応済み。
   ASG化する場合は `modules/ec2` を Launch Template + ASG構成に拡張する。
-- **Step Functions / EventBridge / Lambda / AWS Batch**: `modules/monitoring` に
-  既にEventBridge Ruleの実装例があるため、同様のパターンで追加可能。
-- **S3イベント**: `modules/s3` のバケットに `aws_s3_bucket_notification` を追加するだけで対応可能。
+- **Step Functions / EventBridge / Lambda**: 本改修で実装済み(`modules/eventbridge`,
+  `modules/lambda`, `modules/stepfunctions`)。`enable_event_driven_job_execution` /
+  `use_step_functions` 変数で有効化・切替が可能。
+- **AWS Batch**: SSM Run Command方式の代わりにAWS Batch(Windows対応コンテナ/EC2)へ
+  ジョブを投入する構成へ拡張する場合は、Lambda内の `_send_command` をBatch SubmitJobへ
+  差し替えることで対応可能(Launcherインターフェースはそのまま流用できる)。
+- **S3イベント**: 本改修で実装済み(`aws_s3_bucket_notification` の `eventbridge = true` 設定)。
 - **AWS Managed Microsoft AD / ドメイン参加**: `modules/fsx` は既に
   `self_managed_active_directory` ブロックで外部AD接続に対応済みのため、
   Managed AD構築モジュールを追加し出力値を渡すだけで統合できる。
@@ -515,3 +747,20 @@ NAT Gateway経由(インターネット向け経路)ではなくVPC内で完結�
 - **ライセンスサーバー追加/複数アプリケーションの同居**: 本基盤はアプリケーション
   非依存設計のため、追加のEC2インスタンス(`ec2_instance_count`増加)や
   S3/FSxの追加フォルダ(`fsx_shared_folders`)で対応可能。
+- **SQSによるジョブキュー**: EventBridgeとLambdaの間にSQSを挟み、Lambdaの同時実行数
+  (`lambda_reserved_concurrency`)を超えるバーストに対してバッファリングする構成へ
+  容易に拡張可能(EventBridgeターゲットをSQSに変更し、Lambdaをイベントソースマッピングで駆動)。
+- **複数Windows Worker / ジョブ優先度制御**: `target_tag_key`/`target_tag_value` による
+  タグベースターゲティングを利用し、複数EC2へジョブを分散する構成に拡張できる。
+  優先度制御が必要な場合はSQSの複数キュー(優先度別)+EventBridge Pipesの組み合わせを推奨。
+- **ジョブキャンセル**: Step Functions利用時は `StopExecution` API、SSM側は
+  `ssm:CancelCommand` を呼び出すキャンセル用Lambda/APIを追加することで対応可能。
+- **実行履歴管理**: Step Functensの実行履歴に加え、DynamoDBにジョブメタデータ
+  (JobId/Status/開始終了時刻/入出力パス)を記録するテーブルを追加し、
+  LambdaまたはLauncherから書き込む構成へ拡張できる。
+- **Web UI / API Gateway / 認証機能**: API Gateway + Lambda + Cognitoにより、
+  ユーザーがブラウザからジョブ投入・進捗確認・結果ダウンロードを行えるUIを追加可能。
+  現状のS3直接アップロード方式はAPI Gatewayの署名付きURL発行Lambdaに置き換えられる。
+- **CI/CD (GitHub Actions)**: `terraform fmt/validate/plan` に加え、Lambda静的解析
+  (`pyflakes`/`bandit`)、PowerShell構文チェック(`PSScriptAnalyzer`)を
+  GitHub Actionsワークフローに組み込むことで、PR時の自動品質チェックが可能。

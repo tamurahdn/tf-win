@@ -31,6 +31,12 @@ variable "lifecycle_transition_ia_days" {
   default     = 30
 }
 
+variable "eventbridge_enabled_keys" {
+  description = "EventBridgeへイベント通知を送出するバケットの論理名(bucket_namesのキー)リスト。イベント駆動ジョブ実行のトリガーとなるinputバケット等を指定する。"
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "共通タグ"
   type        = map(string)

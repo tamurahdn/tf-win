@@ -4,13 +4,15 @@
 
 locals {
   log_groups = {
-    system_event   = "system-event-log"    # Windows Event Log (System)
-    application    = "application-event-log" # Windows Event Log (Application)
-    security_event = "security-event-log"  # Windows Event Log (Security)
-    powershell     = "powershell-log"      # PowerShellスクリプト実行ログ
-    ssm            = "ssm-agent-log"       # SSM Agent / Run Command 実行ログ
-    setup          = "setup-log"           # 初期セットアップスクリプト実行ログ
-    application_log = "application-log"    # 対象アプリケーションのログ格納先(格納のみ、内容はアプリ依存)
+    system_event    = "system-event-log"      # Windows Event Log (System)
+    application     = "application-event-log" # Windows Event Log (Application)
+    security_event  = "security-event-log"    # Windows Event Log (Security)
+    powershell      = "powershell-log"        # PowerShellスクリプト実行ログ
+    ssm             = "ssm-agent-log"         # SSM Agent / Run Command 実行ログ
+    setup           = "setup-log"             # 初期セットアップスクリプト実行ログ
+    application_log = "application-log"       # 対象アプリケーションのログ格納先(格納のみ、内容はアプリ依存)
+    job_execution   = "job-execution-log"     # Launcherが出力するジョブ実行ログ(構造化ログ)
+    step_functions  = "step-functions-log"    # Step Functionsステートマシン実行ログ(use_step_functions=true時のみ利用)
   }
 }
 

@@ -74,3 +74,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
     }
   }
 }
+
+# イベント駆動ジョブ実行基盤のトリガーとして、指定バケット(通常はinput)の
+# ObjectCreatedイベントをEventBridgeへ配信する。個別のS3イベント通知設定ではなく
+# EventBridge経由とすることで、Lambda直接連携/Step Functions連携の両方を
+# 同一の通知経路から柔軟に切り替え可能にしている。
+resource "aws_s3_bucket_notification" "eventbridge" {
+  for_each = toset(var.eventbridge_enabled_keys)
+  bucket   = aws_s3_bucket.this[each.value].id
+
+  eventbridge = true
+}

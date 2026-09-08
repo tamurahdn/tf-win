@@ -312,3 +312,91 @@ variable "log_retention_in_days" {
   type        = number
   default     = 90
 }
+
+##############################
+# イベント駆動ジョブ実行基盤
+##############################
+
+variable "enable_event_driven_job_execution" {
+  description = "S3→EventBridge→Lambda→SSM→EC2によるイベント駆動ジョブ実行基盤を有効にするか"
+  type        = bool
+  default     = false
+}
+
+variable "use_step_functions" {
+  description = "EventBridgeの後続としてStep Functionsを利用するか"
+  type        = bool
+  default     = false
+}
+
+variable "job_input_key_prefix" {
+  description = "EventBridgeルールでフィルタする入力S3キーのプレフィックス"
+  type        = string
+  default     = ""
+}
+
+variable "target_tag_key" {
+  description = "SSM Run Commandの対象をタグで指定する場合のタグキー"
+  type        = string
+  default     = "Role"
+}
+
+variable "target_tag_value" {
+  description = "SSM Run Commandの対象をタグで指定する場合のタグ値"
+  type        = string
+  default     = "tf-win-worker"
+}
+
+variable "use_tag_based_targeting" {
+  description = "trueの場合タグベースでSSM対象を指定、falseの場合ec2モジュールが作成したインスタンスIDを直接指定する"
+  type        = bool
+  default     = false
+}
+
+variable "default_app_config_name" {
+  description = "Launcherが起動時に参照するデフォルトのアプリケーション設定名"
+  type        = string
+  default     = "sample-uppercase"
+}
+
+variable "launcher_script_s3_key" {
+  description = "launcher.ps1のS3キー(scriptsバケット配下)"
+  type        = string
+  default     = "launcher/launcher.ps1"
+}
+
+variable "lambda_timeout_seconds" {
+  description = "Job Dispatcher LambdaのTimeout秒数"
+  type        = number
+  default     = 60
+}
+
+variable "lambda_memory_size" {
+  description = "Job Dispatcher LambdaのMemorySize(MB)"
+  type        = number
+  default     = 256
+}
+
+variable "lambda_reserved_concurrency" {
+  description = "Job Dispatcher Lambdaの予約済み同時実行数(-1で未設定)"
+  type        = number
+  default     = -1
+}
+
+variable "ssm_command_timeout_seconds" {
+  description = "Launcher実行(SSM Run Command)のタイムアウト秒数"
+  type        = number
+  default     = 7200
+}
+
+variable "step_functions_poll_interval_seconds" {
+  description = "Step Functions利用時のSSMコマンド完了ポーリング間隔(秒)"
+  type        = number
+  default     = 30
+}
+
+variable "step_functions_max_poll_attempts" {
+  description = "Step Functions利用時のSSMコマンド完了ポーリング最大回数"
+  type        = number
+  default     = 240
+}

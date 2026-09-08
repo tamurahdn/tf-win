@@ -19,12 +19,12 @@ resource "aws_ssm_document" "run_setup_script" {
       s3Bucket = {
         type        = "String"
         description = "スクリプトが格納されたS3バケット名"
-        default      = var.scripts_bucket_name
+        default     = var.scripts_bucket_name
       }
       s3Key = {
         type        = "String"
         description = "スクリプトのS3キー"
-        default      = var.setup_script_s3_key
+        default     = var.setup_script_s3_key
       }
     }
     mainSteps = [
@@ -51,8 +51,81 @@ resource "aws_ssm_document" "run_setup_script" {
 }
 
 ##############################
-# State Manager Association
+# ジョブ実行用SSMドキュメント(Launcher起動)
 ##############################
+# Lambda(Job Dispatcher)が ssm:SendCommand で本ドキュメントを呼び出し、
+# S3からlauncher.ps1を取得した上で、ジョブパラメータを渡して実行する。
+# Launcherの実体(対象アプリの起動方法)はS3上のスクリプト差し替えのみで
+# 変更可能なため、本ドキュメント/Lambda側の変更は不要となる。
+
+resource "aws_ssm_document" "run_job_launcher" {
+  name            = "${var.name_prefix}-run-job-launcher"
+  document_type   = "Command"
+  document_format = "YAML"
+
+  content = yamlencode({
+    schemaVersion = "2.2"
+    description   = "FSx上のWorkspaceでLauncherを実行し、任意のWindowsアプリケーションを起動する"
+    parameters = {
+      jobId = {
+        type        = "String"
+        description = "ジョブ一意識別子"
+      }
+      inputBucket = {
+        type        = "String"
+        description = "入力ファイルが格納されたS3バケット名"
+      }
+      inputKey = {
+        type        = "String"
+        description = "入力ファイルのS3キー"
+      }
+      outputBucket = {
+        type        = "String"
+        description = "出力ファイルを格納するS3バケット名"
+      }
+      logsBucket = {
+        type        = "String"
+        description = "ログを格納するS3バケット名"
+      }
+      appConfigName = {
+        type        = "String"
+        description = "起動対象アプリケーションの設定名(Launcherが参照する設定ファイル名)"
+        default     = var.default_app_config_name
+      }
+      scriptsBucket = {
+        type        = "String"
+        description = "launcher.ps1が格納されたS3バケット名"
+        default     = var.scripts_bucket_name
+      }
+      launcherS3Key = {
+        type        = "String"
+        description = "launcher.ps1のS3キー"
+        default     = var.launcher_script_s3_key
+      }
+    }
+    mainSteps = [
+      {
+        action = "aws:runPowerShellScript"
+        name   = "runJobLauncher"
+        inputs = {
+          timeoutSeconds = var.launcher_timeout_seconds
+          runCommand = [
+            "$ErrorActionPreference = 'Stop'",
+            "$launcherPath = Join-Path $env:TEMP 'launcher.ps1'",
+            "Read-S3Object -BucketName '{{ scriptsBucket }}' -Key '{{ launcherS3Key }}' -File $launcherPath",
+            "& $launcherPath -JobId '{{ jobId }}' -InputBucket '{{ inputBucket }}' -InputKey '{{ inputKey }}' -OutputBucket '{{ outputBucket }}' -LogsBucket '{{ logsBucket }}' -AppConfigName '{{ appConfigName }}'",
+            "exit $LASTEXITCODE"
+          ]
+        }
+      }
+    ]
+  })
+
+  tags = merge(var.tags, {
+    Name = "${var.name_prefix}-run-job-launcher"
+  })
+}
+
 # setup_script_execution_mode = "state_manager" の場合のみ作成。
 # 起動時(association時)に1回実行する設定とし、恒久的な定期実行が必要な場合は
 # schedule_expressionを追加すること。

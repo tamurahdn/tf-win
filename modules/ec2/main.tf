@@ -39,10 +39,10 @@ resource "aws_instance" "this" {
 
   root_block_device {
     volume_size           = var.root_volume_size
-    volume_type            = var.root_volume_type
-    encrypted              = true
-    kms_key_id             = var.kms_key_id
-    delete_on_termination  = true
+    volume_type           = var.root_volume_type
+    encrypted             = true
+    kms_key_id            = var.kms_key_id
+    delete_on_termination = true
 
     tags = merge(var.tags, {
       Name = "${var.name_prefix}-ec2-${count.index}-root"

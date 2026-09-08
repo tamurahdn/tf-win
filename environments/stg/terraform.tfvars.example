@@ -63,3 +63,19 @@ alarm_cpu_threshold       = 80
 alarm_memory_threshold    = 80
 alarm_disk_threshold      = 80
 log_retention_in_days     = 90
+
+# --- イベント駆動ジョブ実行基盤 ---
+enable_event_driven_job_execution = false
+use_step_functions                = false
+job_input_key_prefix              = ""
+target_tag_key                    = "Role"
+target_tag_value                  = "tf-win-worker"
+use_tag_based_targeting           = false
+default_app_config_name           = "sample-uppercase"
+launcher_script_s3_key            = "launcher/launcher.ps1"
+lambda_timeout_seconds            = 60
+lambda_memory_size                = 256
+lambda_reserved_concurrency       = -1
+ssm_command_timeout_seconds       = 7200
+step_functions_poll_interval_seconds = 30
+step_functions_max_poll_attempts     = 240

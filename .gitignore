@@ -27,3 +27,8 @@ Thumbs.db
 # エディタ
 .vscode/
 .idea/
+
+# Lambda archive build artifacts
+modules/lambda/build/
+__pycache__/
+*.pyc
